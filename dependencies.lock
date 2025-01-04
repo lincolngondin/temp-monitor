@@ -3,6 +3,13 @@ dependencies:
     source:
       type: idf
     version: 5.5.0
+  lvgl/lvgl:
+    component_hash: 096c69af22eaf8a2b721e3913da91918c5e6bf1a762a113ec01f401aa61337a0
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 9.2.2
   zorxx/dht:
     component_hash: 6a5e699b15509d99b90352694e23beb6646855486eb3bafefd1d50058d474e98
     dependencies: []
@@ -12,7 +19,8 @@ dependencies:
     version: 1.0.1
 direct_dependencies:
 - idf
+- lvgl/lvgl
 - zorxx/dht
-manifest_hash: b76749a41195fce1ffbb19fbef8eefd28cc385c36d5c7cef142518a049ecb88c
+manifest_hash: 6dae096717f395cd34d41170f322f4161c871474ee62a84981a713ccb533ca59
 target: esp32
 version: 2.0.0

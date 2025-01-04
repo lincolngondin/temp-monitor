@@ -1,5 +1,6 @@
 ## IDF Component Manager Manifest File
 dependencies:
+  lvgl/lvgl: "^9.2.2"
   zorxx/dht: "^1.0.1"
   ## Required IDF version
   idf:
