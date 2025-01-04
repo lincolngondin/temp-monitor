@@ -3,13 +3,22 @@ dependencies:
     source:
       type: idf
     version: 5.5.0
-  lvgl/lvgl:
-    component_hash: 096c69af22eaf8a2b721e3913da91918c5e6bf1a762a113ec01f401aa61337a0
+  u8g2:
+    component_hash: 12041b69c0035d7cf318fad70321b48947b96a4096b84c73881f72fc8e88909b
     dependencies: []
     source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 9.2.2
+      git: https://github.com/olikraus/u8g2.git
+      path: .
+      type: git
+    version: f0eb0ed7bfc0f1da99f2899d2312538ac9929ac7
+  u8g2-hal-esp-idf:
+    component_hash: 2483e67353d55b9ed489f9f34186b0eea2b6b2b1dc63ad148a257bd7ed94ea0c
+    dependencies: []
+    source:
+      git: https://github.com/mkfrey/u8g2-hal-esp-idf
+      path: .
+      type: git
+    version: 3d1183516e21d59408adbbab275829c67a7f3a6f
   zorxx/dht:
     component_hash: 6a5e699b15509d99b90352694e23beb6646855486eb3bafefd1d50058d474e98
     dependencies: []
@@ -19,8 +28,9 @@ dependencies:
     version: 1.0.1
 direct_dependencies:
 - idf
-- lvgl/lvgl
+- u8g2
+- u8g2-hal-esp-idf
 - zorxx/dht
-manifest_hash: 6dae096717f395cd34d41170f322f4161c871474ee62a84981a713ccb533ca59
+manifest_hash: 33d733b364ac239a81ef4371e7790d52d15fd170eee27cfebd94270e23dde252
 target: esp32
 version: 2.0.0
