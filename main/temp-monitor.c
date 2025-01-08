@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "hal/gpio_types.h"
 #include "portmacro.h"
+#include "soc/gpio_num.h"
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
 
@@ -22,7 +23,7 @@ static const char* TAG = "tempMonitor";
 // Buttons
 #define PIN_UP_VALUE_NUM GPIO_NUM_5
 #define PIN_DOWN_VALUE_NUM GPIO_NUM_18
-#define PIN_CHANGE_VALUE_NUM GPIO_NUM_19
+#define PIN_CHANGE_STATE GPIO_NUM_19
 
 // LCD configs
 #define PIN_SDA_NUM GPIO_NUM_21
@@ -133,6 +134,69 @@ void decrease_temperature_value(temperature_limits *tl, int maxValue){
 
 static QueueHandle_t gpio_evt_queue = NULL;
 
+typedef enum {
+    idle = 0,
+    monitoring,
+    changing_inferior_temperature,
+    changing_superior_temperature,
+    alerting,
+} monitor_state;
+
+typedef struct monitor {
+    monitor_state state; 
+    SemaphoreHandle_t mu;
+} monitor;
+
+void init_monitor(monitor *m){
+    m->state = idle;
+    m->mu = xSemaphoreCreateMutex();
+}
+
+void go_next_state(monitor *m) {
+    monitor_state actual_state;
+    xSemaphoreTake(m->mu, portMAX_DELAY);
+    {
+        actual_state = m->state;
+        if(actual_state == idle){
+            m->state = monitoring;
+        }
+        else if(actual_state == monitoring){
+            m->state = changing_inferior_temperature;
+        } 
+        else if(actual_state == changing_inferior_temperature){
+            m->state = changing_superior_temperature;
+        }
+        else if(actual_state == changing_superior_temperature){
+            m->state = monitoring;
+        }
+        else if(actual_state == alerting){
+            m->state = idle;
+        }
+    }
+    xSemaphoreGive(m->mu);
+}
+
+void change_state(monitor *m, monitor_state state){
+    xSemaphoreTake(m->mu, portMAX_DELAY);
+    {
+        m->state = state;
+    }
+    xSemaphoreGive(m->mu);
+}
+
+monitor_state get_state(monitor *m) {
+    monitor_state st;
+    xSemaphoreTake(m->mu, portMAX_DELAY);
+    {
+        st = m->state;
+    }
+    xSemaphoreGive(m->mu);
+
+    return st;
+}
+
+monitor global_monitor;
+
 /**
  * Task that receives button input
  *
@@ -140,18 +204,31 @@ static QueueHandle_t gpio_evt_queue = NULL;
 void vTaskButtons(void *pvParametes) {
     uint32_t io_num;
     int level = 0;
+    monitor_state state;
     for(;;){
         if(xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)){
             printf("Received input: %d value: %d\n", io_num, gpio_get_level(io_num));
             level = gpio_get_level(io_num);
             if(level == 1){
+                state = get_state(&global_monitor);
                 if(io_num == PIN_UP_VALUE_NUM){
-                    increase_temperature_value(&limits, 0);
+                    if(state == changing_inferior_temperature){
+                        increase_temperature_value(&limits, 0);
+                    }
+                    else if(state == changing_superior_temperature){
+                        increase_temperature_value(&limits, 1);
+                    }
                 }
                 else if(io_num == PIN_DOWN_VALUE_NUM){
-                    decrease_temperature_value(&limits, 0);
+                    if(state == changing_inferior_temperature){
+                        decrease_temperature_value(&limits, 0);
+                    }
+                    else if(state == changing_superior_temperature){
+                        decrease_temperature_value(&limits, 1);
+                    }
                 }
-                else {
+                else if(io_num == PIN_CHANGE_STATE){
+                    go_next_state(&global_monitor);
                 }
             }
 
@@ -189,19 +266,36 @@ void vTaskDisplayTemperatureAndHumidity(void *pvParameters){
     char str[40];
     int mi = 0;
     int ms = 0;
+    monitor_state m_state;
 
     for(;;){
         u8g2_ClearBuffer(&u8g2);
         u8g2_SetFont(&u8g2, u8g2_font_DigitalDisco_tf);
         snprintf(str, sizeof(str), "Temp: %.2f",sensor_values.temperature);
-        u8g2_DrawStr(&u8g2, 2, 20, str);
+        u8g2_DrawStr(&u8g2, 2, 10, str);
         snprintf(str, sizeof(str), "Hum: %.2f",sensor_values.humidity);
-        u8g2_DrawStr(&u8g2, 2, 40, str);
+        u8g2_DrawStr(&u8g2, 2, 30, str);
 
         
         get_values(&limits, &ms, &mi);
         snprintf(str, sizeof(str), "%d < X < %d",mi, ms);
+        u8g2_DrawStr(&u8g2, 2, 50, str);
+
+        m_state = get_state(&global_monitor);
+        if(m_state == monitoring){
+            snprintf(str, sizeof(str), "monitoring");
+        }
+        else if(m_state == idle){
+            snprintf(str, sizeof(str), "idle");
+        }
+        else if(m_state == changing_superior_temperature){
+            snprintf(str, sizeof(str), "cs");
+        }
+        else if(m_state == changing_inferior_temperature){
+            snprintf(str, sizeof(str), "ci");
+        }
         u8g2_DrawStr(&u8g2, 2, 60, str);
+
 
         u8g2_SendBuffer(&u8g2);
 
@@ -233,9 +327,39 @@ static void IRAM_ATTR get_switch_input(void *arg){
     xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
 }
 
+void config_button(gpio_num_t pin){
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_INPUT);
+    gpio_pulldown_en(pin);
+    gpio_pullup_dis(pin);
+    gpio_set_intr_type(pin, GPIO_INTR_POSEDGE);
+}
+
+void add_interrupt_services(){
+    esp_err_t install_err = gpio_install_isr_service(0);
+    if(install_err != ESP_OK){
+        ESP_LOGE(TAG, "Error installing isr service: %s", esp_err_to_name(install_err));
+    }
+    esp_err_t add_up_handler_err = gpio_isr_handler_add(PIN_UP_VALUE_NUM, get_switch_input, (void*)PIN_UP_VALUE_NUM);
+    if(add_up_handler_err != ESP_OK){
+        ESP_LOGE(TAG, "Error adding up handler: %s", esp_err_to_name(add_up_handler_err));
+    }
+
+    esp_err_t add_down_handler_err = gpio_isr_handler_add(PIN_DOWN_VALUE_NUM, get_switch_input, (void*)PIN_DOWN_VALUE_NUM);
+    if(add_down_handler_err != ESP_OK){
+        ESP_LOGE(TAG, "Error adding down handler: %s", esp_err_to_name(add_down_handler_err));
+    }
+
+    esp_err_t add_change_handler_err = gpio_isr_handler_add(PIN_CHANGE_STATE, get_switch_input, (void*)PIN_CHANGE_STATE);
+    if(add_change_handler_err != ESP_OK){
+        ESP_LOGE(TAG, "Error adding change handler: %s", esp_err_to_name(add_change_handler_err));
+    }
+}
+
 void app_main(void)
 {
 
+    init_monitor(&global_monitor);
     init_temperature_limits(&limits);
 
     setup_display();
@@ -248,36 +372,11 @@ void app_main(void)
     // create the queue of the switch inputs
     gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
 
-    //gpio_reset_pin(PIN_UP_VALUE_NUM);
-    gpio_set_direction(PIN_UP_VALUE_NUM, GPIO_MODE_INPUT);
-    gpio_pulldown_en(PIN_UP_VALUE_NUM);
-    gpio_pullup_dis(PIN_UP_VALUE_NUM);
-    gpio_set_intr_type(PIN_UP_VALUE_NUM, GPIO_INTR_POSEDGE);
+    config_button(PIN_UP_VALUE_NUM);
+    config_button(PIN_DOWN_VALUE_NUM);
+    config_button(PIN_CHANGE_STATE);
 
-    /*
-    gpio_reset_pin(PIN_DOWN_VALUE_NUM);
-    gpio_set_direction(PIN_DOWN_VALUE_NUM, GPIO_MODE_INPUT);
-    gpio_pulldown_en(PIN_DOWN_VALUE_NUM);
-    gpio_pullup_dis(PIN_DOWN_VALUE_NUM);
-    gpio_set_intr_type(PIN_DOWN_VALUE_NUM, GPIO_INTR_POSEDGE);
-    */
-
-    esp_err_t install_err = gpio_install_isr_service(0);
-    if(install_err != ESP_OK){
-        ESP_LOGE(TAG, "Error installing isr service: %s", esp_err_to_name(install_err));
-    }
-    esp_err_t add_up_handler_err = gpio_isr_handler_add(PIN_UP_VALUE_NUM, get_switch_input, (void*)PIN_UP_VALUE_NUM);
-    if(add_up_handler_err != ESP_OK){
-        ESP_LOGE(TAG, "Error adding up handler: %s", esp_err_to_name(add_up_handler_err));
-    }
-
-    /*
-    
-    esp_err_t add_down_handler_err = gpio_isr_handler_add(PIN_DOWN_VALUE_NUM, decrease_value, NULL);
-    if(add_down_handler_err != ESP_OK){
-        ESP_LOGE(TAG, "Error adding down handler: %s", esp_err_to_name(add_down_handler_err));
-    }
-    */
+    add_interrupt_services();
 
     BaseType_t taskButtonsCreation = xTaskCreatePinnedToCore(vTaskButtons, "TASK_GET_INPUTS", 4096, NULL, 10, NULL, 0);
     if(taskButtonsCreation != pdPASS) {
