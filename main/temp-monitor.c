@@ -60,6 +60,15 @@ void updateSensorReading(float hum, float temp) {
   xSemaphoreGive(sensor_mutex);
 }
 
+void getSensorReadings(float *hum, float *temp) {
+  xSemaphoreTake(sensor_mutex, portMAX_DELAY);
+  {
+    *hum = sensor_values.humidity;
+    *temp = sensor_values.temperature;
+  }
+  xSemaphoreGive(sensor_mutex);
+}
+
 typedef struct temperature_limits {
   int maxSuperiorTemperatureInCelsius;
   int minInferiorTemperatureInCelsius;
@@ -84,9 +93,7 @@ int init_temperature_limits(temperature_limits *tl) {
 int get_max_superior_temperature(temperature_limits *tl) {
   int value = 0;
   xSemaphoreTake(tl->mu, portMAX_DELAY);
-  {
-    value = tl->maxSuperiorTemperatureInCelsius;
-  }
+  { value = tl->maxSuperiorTemperatureInCelsius; }
   xSemaphoreGive(tl->mu);
   return value;
 }
@@ -94,9 +101,7 @@ int get_max_superior_temperature(temperature_limits *tl) {
 int get_min_inferior_temperature(temperature_limits *tl) {
   int value = 0;
   xSemaphoreTake(tl->mu, portMAX_DELAY);
-  {
-    value = tl->minInferiorTemperatureInCelsius;
-  }
+  { value = tl->minInferiorTemperatureInCelsius; }
   xSemaphoreGive(tl->mu);
   return value;
 }
@@ -176,18 +181,14 @@ void go_next_state(monitor *m) {
 
 void change_state(monitor *m, monitor_state state) {
   xSemaphoreTake(m->mu, portMAX_DELAY);
-  {
-    m->state = state;
-  }
+  { m->state = state; }
   xSemaphoreGive(m->mu);
 }
 
 monitor_state get_state(monitor *m) {
   monitor_state st;
   xSemaphoreTake(m->mu, portMAX_DELAY);
-  {
-    st = m->state;
-  }
+  { st = m->state; }
   xSemaphoreGive(m->mu);
 
   return st;
