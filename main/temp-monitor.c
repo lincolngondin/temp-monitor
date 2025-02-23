@@ -36,7 +36,11 @@ static const char *TAG = "tempMonitor";
 #define LCD_V_RES 64
 
 // Buzzer configs
-#define PIN_BUZZER_NUM GPIO_NUM_34
+#define PIN_BUZZER_NUM GPIO_NUM_5
+
+// Sensor ranges
+#define MIN_SENSOR_TEMPERATURE_IN_CELSIUS 0
+#define MAX_SENSOR_TEMPERATURE_IN_CELSIUS 50
 
 TaskHandle_t taskReadSensorHandler;
 TaskHandle_t taskDisplayReadings;
@@ -85,8 +89,8 @@ int init_temperature_limits(temperature_limits *tl) {
   if (tl->mu == NULL) {
     return -1;
   }
-  tl->maxSuperiorTemperatureInCelsius = 0;
-  tl->minInferiorTemperatureInCelsius = 0;
+  tl->maxSuperiorTemperatureInCelsius = MAX_SENSOR_TEMPERATURE_IN_CELSIUS;
+  tl->minInferiorTemperatureInCelsius = MIN_SENSOR_TEMPERATURE_IN_CELSIUS;
   return 0;
 }
 
@@ -119,9 +123,16 @@ void increase_temperature_value(temperature_limits *tl, int maxValue) {
   xSemaphoreTake(tl->mu, portMAX_DELAY);
   {
     if (maxValue != 0) {
-      tl->maxSuperiorTemperatureInCelsius++;
+      if ((++tl->maxSuperiorTemperatureInCelsius) >
+          MAX_SENSOR_TEMPERATURE_IN_CELSIUS) {
+        tl->maxSuperiorTemperatureInCelsius = MAX_SENSOR_TEMPERATURE_IN_CELSIUS;
+      }
     } else {
-      tl->minInferiorTemperatureInCelsius++;
+      if ((++tl->minInferiorTemperatureInCelsius) >=
+          tl->maxSuperiorTemperatureInCelsius) {
+        tl->minInferiorTemperatureInCelsius =
+            tl->maxSuperiorTemperatureInCelsius - 1;
+      }
     }
   }
   xSemaphoreGive(tl->mu);
@@ -131,9 +142,16 @@ void decrease_temperature_value(temperature_limits *tl, int maxValue) {
   xSemaphoreTake(tl->mu, portMAX_DELAY);
   {
     if (maxValue != 0) {
-      tl->maxSuperiorTemperatureInCelsius--;
+      if ((--tl->maxSuperiorTemperatureInCelsius) <=
+          tl->minInferiorTemperatureInCelsius) {
+        tl->maxSuperiorTemperatureInCelsius =
+            tl->minInferiorTemperatureInCelsius + 1;
+      }
     } else {
-      tl->minInferiorTemperatureInCelsius--;
+      if ((--tl->minInferiorTemperatureInCelsius) <
+          MIN_SENSOR_TEMPERATURE_IN_CELSIUS) {
+        tl->minInferiorTemperatureInCelsius = MIN_SENSOR_TEMPERATURE_IN_CELSIUS;
+      }
     }
   }
   xSemaphoreGive(tl->mu);
@@ -284,13 +302,16 @@ void vTaskDisplayTemperatureAndHumidity(void *pvParameters) {
   int mi = 0;
   int ms = 0;
   monitor_state m_state;
+  float hum;
+  float temp;
 
   for (;;) {
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_DigitalDisco_tf);
-    snprintf(str, sizeof(str), "Temp: %.2f", sensor_values.temperature);
+    getSensorReadings(&hum, &temp);
+    snprintf(str, sizeof(str), "Temp: %.2f", temp);
     u8g2_DrawStr(&u8g2, 2, 10, str);
-    snprintf(str, sizeof(str), "Hum: %.2f", sensor_values.humidity);
+    snprintf(str, sizeof(str), "Hum: %.2f", hum);
     u8g2_DrawStr(&u8g2, 2, 30, str);
 
     get_values(&limits, &ms, &mi);
@@ -320,9 +341,24 @@ void vTaskDisplayTemperatureAndHumidity(void *pvParameters) {
  * Task to trigger the buzzer
  */
 void vTaskAlarm(void *pvParameters) {
-  // gpio_reset_pin(PIN_BUZZER_NUM);
+  gpio_reset_pin(PIN_BUZZER_NUM);
+  gpio_set_direction(PIN_BUZZER_NUM, GPIO_MODE_OUTPUT);
+  monitor_state state;
+  float actualTemp;
+  float actualHum;
   for (;;) {
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+    state = get_state(&global_monitor);
+    getSensorReadings(&actualHum, &actualTemp);
+    if (state == monitoring) {
+      if ((actualTemp >= get_max_superior_temperature(&limits)) ||
+          (actualTemp <= get_min_inferior_temperature(&limits))) {
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+        gpio_set_level(PIN_BUZZER_NUM, 1);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+        gpio_set_level(PIN_BUZZER_NUM, 0);
+      }
+    }
+    vTaskDelay(100 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
 }
@@ -431,8 +467,8 @@ void app_main(void) {
              esp_err_to_name(taskDisplayCreation));
   }
 
-  BaseType_t taskAlarmCreation = xTaskCreatePinnedToCore(
-      vTaskAlarm, "TASK_ALARM", 2048, NULL, 2, NULL, tskNO_AFFINITY);
+  BaseType_t taskAlarmCreation =
+      xTaskCreatePinnedToCore(vTaskAlarm, "TASK_ALARM", 4096, NULL, 4, NULL, 0);
   if (taskAlarmCreation != pdPASS) {
     ESP_LOGE(TAG, "Error creating task: %s",
              esp_err_to_name(taskAlarmCreation));
