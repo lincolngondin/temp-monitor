@@ -3,6 +3,7 @@
 #include "esp_err.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/projdefs.h"
@@ -41,6 +42,9 @@ static const char *TAG = "tempMonitor";
 // Sensor ranges
 #define MIN_SENSOR_TEMPERATURE_IN_CELSIUS 0
 #define MAX_SENSOR_TEMPERATURE_IN_CELSIUS 50
+
+// Timers
+#define HOLD_TIME_US 1000000
 
 TaskHandle_t taskReadSensorHandler;
 TaskHandle_t taskDisplayReadings;
@@ -183,13 +187,13 @@ void go_next_state(monitor *m) {
   {
     actual_state = m->state;
     if (actual_state == idle) {
-      m->state = monitoring;
-    } else if (actual_state == monitoring) {
       m->state = changing_inferior_temperature;
+    } else if (actual_state == monitoring) {
+      m->state = idle;
     } else if (actual_state == changing_inferior_temperature) {
       m->state = changing_superior_temperature;
     } else if (actual_state == changing_superior_temperature) {
-      m->state = monitoring;
+      m->state = idle;
     } else if (actual_state == alerting) {
       m->state = idle;
     }
@@ -225,6 +229,8 @@ void vTaskButtons(void *pvParametes) {
   bool pin_up_state;
   bool pin_down_state;
   bool pin_change_state;
+  int64_t temp_before;
+  int64_t temp_after;
   for (;;) {
     if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
       printf("Received input: %d value: %d\n", io_num, gpio_get_level(io_num));
@@ -235,6 +241,7 @@ void vTaskButtons(void *pvParametes) {
         } else if (io_num == PIN_DOWN_VALUE_NUM) {
           pin_down_state = true;
         } else if (io_num == PIN_CHANGE_STATE) {
+          temp_before = esp_timer_get_time();
           pin_change_state = true;
         }
       }
@@ -244,6 +251,7 @@ void vTaskButtons(void *pvParametes) {
         } else if (io_num == PIN_DOWN_VALUE_NUM) {
           pin_down_state = false;
         } else if (io_num == PIN_CHANGE_STATE) {
+          temp_after = esp_timer_get_time();
           pin_change_state = false;
         }
       }
@@ -264,7 +272,9 @@ void vTaskButtons(void *pvParametes) {
         decrease_temperature_value(&limits, 1);
       }
     }
-    if (pin_change_state) {
+    if ((temp_after - temp_before) > HOLD_TIME_US) {
+      change_state(&global_monitor, monitoring);
+    } else if (pin_change_state) {
       go_next_state(&global_monitor);
     }
   }
@@ -327,6 +337,8 @@ void vTaskDisplayTemperatureAndHumidity(void *pvParameters) {
       snprintf(str, sizeof(str), "cs");
     } else if (m_state == changing_inferior_temperature) {
       snprintf(str, sizeof(str), "ci");
+    } else if (m_state == alerting) {
+      snprintf(str, sizeof(str), "ALERTING!!");
     }
     u8g2_DrawStr(&u8g2, 2, 60, str);
 
@@ -349,9 +361,14 @@ void vTaskAlarm(void *pvParameters) {
   for (;;) {
     state = get_state(&global_monitor);
     getSensorReadings(&actualHum, &actualTemp);
-    if (state == monitoring) {
+    if (state == monitoring || state == alerting) {
       if ((actualTemp >= get_max_superior_temperature(&limits)) ||
-          (actualTemp <= get_min_inferior_temperature(&limits))) {
+          (actualTemp <= get_min_inferior_temperature(&limits)) ||
+          state == alerting) {
+        if (state != alerting) {
+          change_state(&global_monitor, alerting);
+        }
+
         vTaskDelay(200 / portTICK_PERIOD_MS);
         gpio_set_level(PIN_BUZZER_NUM, 1);
         vTaskDelay(200 / portTICK_PERIOD_MS);
