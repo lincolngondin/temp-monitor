@@ -26,8 +26,8 @@ static const char *TAG = "tempMonitor";
 #define PIN_DATA GPIO_NUM_23
 
 // Buttons
-#define PIN_UP_VALUE_NUM GPIO_NUM_4
-#define PIN_DOWN_VALUE_NUM GPIO_NUM_18
+#define PIN_UP_VALUE_NUM GPIO_NUM_18
+#define PIN_DOWN_VALUE_NUM GPIO_NUM_4
 #define PIN_CHANGE_STATE GPIO_NUM_19
 
 // LCD configs
@@ -47,18 +47,19 @@ static const char *TAG = "tempMonitor";
 // Timers
 #define HOLD_TIME_US 1000000
 
-TaskHandle_t taskReadSensorHandler;
-TaskHandle_t taskDisplayReadings;
 u8g2_t u8g2;
 
+// struct que armazena as leituras do sensor
 typedef struct sensor_readings {
   float humidity;
   float temperature;
 } sensor_readings;
 
+// instancia global que armazena a ultima leitura do sensor
 sensor_readings sensor_values = {0, 0};
 SemaphoreHandle_t sensor_mutex;
 
+// atualiza o valor da leitura na instancia global
 void updateSensorReading(float hum, float temp) {
   // Save the values in global variable
   xSemaphoreTake(sensor_mutex, portMAX_DELAY);
@@ -69,6 +70,7 @@ void updateSensorReading(float hum, float temp) {
   xSemaphoreGive(sensor_mutex);
 }
 
+// salva a leitura do sensor nas variaveis
 void getSensorReadings(float *hum, float *temp) {
   xSemaphoreTake(sensor_mutex, portMAX_DELAY);
   {
@@ -78,6 +80,8 @@ void getSensorReadings(float *hum, float *temp) {
   xSemaphoreGive(sensor_mutex);
 }
 
+// struct que armazena os intervalos de temperatura superior e inferior esperado
+// pelo sensor
 typedef struct temperature_limits {
   int maxSuperiorTemperatureInCelsius;
   int minInferiorTemperatureInCelsius;
@@ -164,6 +168,7 @@ void decrease_temperature_value(temperature_limits *tl, int maxValue) {
 
 static QueueHandle_t gpio_evt_queue = NULL;
 
+// todos os estados em que o dispositivo pode estar
 typedef enum {
   idle = 0,
   monitoring,
@@ -172,6 +177,8 @@ typedef enum {
   alerting,
 } monitor_state;
 
+// struct que armazena o estado atual do dispositivo e gerencia o acesso a essa
+// informacao
 typedef struct monitor {
   monitor_state state;
   SemaphoreHandle_t mu;
@@ -182,6 +189,7 @@ void init_monitor(monitor *m) {
   m->mu = xSemaphoreCreateMutex();
 }
 
+// vai para o proximo estado
 void go_next_state(monitor *m) {
   monitor_state actual_state;
   xSemaphoreTake(m->mu, portMAX_DELAY);
@@ -202,12 +210,15 @@ void go_next_state(monitor *m) {
   xSemaphoreGive(m->mu);
 }
 
+// muda para um estado arbitrario
+// usada para o alerta
 void change_state(monitor *m, monitor_state state) {
   xSemaphoreTake(m->mu, portMAX_DELAY);
   { m->state = state; }
   xSemaphoreGive(m->mu);
 }
 
+// obtem o estado atual
 monitor_state get_state(monitor *m) {
   monitor_state st;
   xSemaphoreTake(m->mu, portMAX_DELAY);
@@ -217,9 +228,10 @@ monitor_state get_state(monitor *m) {
   return st;
 }
 
+// instancia global do estado do dispositivo
 monitor global_monitor;
 
-// images
+// icones usados no display
 const uint8_t bell_icon_ringing[] = {
     0x20, 0x04, 0x48, 0x12, 0x93, 0xc9, 0xa4, 0x25, 0xa4, 0x25, 0x28,
     0x14, 0x08, 0x10, 0x08, 0x10, 0x08, 0x10, 0x10, 0x08, 0x10, 0x08,
@@ -238,14 +250,17 @@ void vTaskButtons(void *pvParametes) {
   uint32_t io_num;
   int level = 0;
   monitor_state state;
+
+  // armazena o estado de cada botao
   bool pin_up_state;
   bool pin_down_state;
   bool pin_change_state;
+
+  // tempos usados para ativar o monitoramento
   int64_t temp_before;
   int64_t temp_after;
   for (;;) {
     if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-      printf("Received input: %d value: %d\n", io_num, gpio_get_level(io_num));
       level = gpio_get_level(io_num);
       if (level == 1) {
         if (io_num == PIN_UP_VALUE_NUM) {
@@ -309,9 +324,9 @@ void vTaskReadSensor(void *pvParameters) {
       ESP_LOGE(TAG, "Error reading DHT11 sensor data: %s",
                esp_err_to_name(read_err));
     }
-    ESP_LOGI(TAG, "Humidity: %f  Temperature: %f", humidity, temperature);
+    // ESP_LOGI(TAG, "Humidity: %f  Temperature: %f", humidity, temperature);
     updateSensorReading(humidity, temperature);
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
 }
@@ -427,6 +442,7 @@ void vTaskAlarm(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+// configura o display oled ssd1306
 void setup_display() {
   // Setup display
   u8g2_esp32_hal_t u8g2_esp32_hal = U8G2_ESP32_HAL_DEFAULT;
@@ -446,11 +462,22 @@ void setup_display() {
   u8g2_SetPowerSave(&u8g2, 0); // wake up display
 }
 
+// delay de debounce
+#define DEBOUNCE_DELAY_MS 50
+
+// interrupção que ira executar sempre que algum botao for pressionado
 static void IRAM_ATTR get_switch_input(void *arg) {
-  uint32_t gpio_num = (uint32_t)arg;
-  xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+  static uint32_t last_time = 0;
+  uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  if ((current_time - last_time) > DEBOUNCE_DELAY_MS) {
+    uint32_t gpio_num = (uint32_t)arg;
+    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+  }
+  last_time = current_time;
 }
 
+// configura os botoes, o tipo de interrupção deve captura tanto o ato de
+// pressionar quanto o de soltar o botao
 void config_button(gpio_num_t pin) {
   // gpio_reset_pin(pin);
   gpio_set_direction(pin, GPIO_MODE_INPUT);
@@ -459,6 +486,8 @@ void config_button(gpio_num_t pin) {
   gpio_set_intr_type(pin, GPIO_INTR_ANYEDGE);
 }
 
+// instala todos os servicos de interrupções nos botoes chamando a mesma funcao
+// de interrupção e passando o botao pressionado
 void add_interrupt_services() {
   esp_err_t install_err = gpio_install_isr_service(0);
   if (install_err != ESP_OK) {
@@ -502,6 +531,7 @@ void app_main(void) {
   // create the queue of the switch inputs
   gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
 
+  // config all the interface buttons
   config_button(PIN_UP_VALUE_NUM);
   config_button(PIN_DOWN_VALUE_NUM);
   config_button(PIN_CHANGE_STATE);
@@ -515,9 +545,8 @@ void app_main(void) {
              esp_err_to_name(taskButtonsCreation));
   }
 
-  BaseType_t taskReadSensorCreation =
-      xTaskCreatePinnedToCore(vTaskReadSensor, "TASK_READ_SENSOR", 8096, NULL,
-                              1, &taskReadSensorHandler, 1);
+  BaseType_t taskReadSensorCreation = xTaskCreatePinnedToCore(
+      vTaskReadSensor, "TASK_READ_SENSOR", 8096, NULL, 1, NULL, 1);
   if (taskReadSensorCreation != pdPASS) {
     ESP_LOGE(TAG, "Error creating task: %s",
              esp_err_to_name(taskReadSensorCreation));
@@ -525,7 +554,7 @@ void app_main(void) {
 
   BaseType_t taskDisplayCreation = xTaskCreatePinnedToCore(
       vTaskDisplayTemperatureAndHumidity, "TASK_DISPLAY_READING", 4096, NULL, 2,
-      &taskDisplayReadings, tskNO_AFFINITY);
+      NULL, tskNO_AFFINITY);
   if (taskDisplayCreation != pdPASS) {
     ESP_LOGE(TAG, "Error creating task: %s",
              esp_err_to_name(taskDisplayCreation));
