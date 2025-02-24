@@ -13,6 +13,7 @@
 #include "soc/gpio_num.h"
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
+#include "u8x8.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -218,6 +219,17 @@ monitor_state get_state(monitor *m) {
 
 monitor global_monitor;
 
+// images
+const uint8_t bell_icon_ringing[] = {
+    0x20, 0x04, 0x48, 0x12, 0x93, 0xc9, 0xa4, 0x25, 0xa4, 0x25, 0x28,
+    0x14, 0x08, 0x10, 0x08, 0x10, 0x08, 0x10, 0x10, 0x08, 0x10, 0x08,
+    0x10, 0x08, 0x1f, 0xf8, 0x02, 0x40, 0x01, 0x80, 0x00, 0x00};
+
+const uint8_t bell_icon[] = {0x00, 0x00, 0x00, 0x00, 0x03, 0xc0, 0x04, 0x20,
+                             0x04, 0x20, 0x08, 0x10, 0x08, 0x10, 0x08, 0x10,
+                             0x08, 0x10, 0x10, 0x08, 0x10, 0x08, 0x10, 0x08,
+                             0x1f, 0xf8, 0x02, 0x40, 0x01, 0x80, 0x00, 0x00};
+
 /**
  * Task that receives button input
  *
@@ -309,38 +321,73 @@ void vTaskReadSensor(void *pvParameters) {
  */
 void vTaskDisplayTemperatureAndHumidity(void *pvParameters) {
   char str[40];
+  char tempStrCI[5];
+  char tempStrCS[5];
   int mi = 0;
   int ms = 0;
   monitor_state m_state;
   float hum;
   float temp;
+  uint8_t w;
+  uint8_t width_cs;
+  uint8_t width_ci;
+  u8g2_uint_t x;
+  bool ringing = true;
 
   for (;;) {
-    u8g2_ClearBuffer(&u8g2);
-    u8g2_SetFont(&u8g2, u8g2_font_DigitalDisco_tf);
     getSensorReadings(&hum, &temp);
-    snprintf(str, sizeof(str), "Temp: %.2f", temp);
-    u8g2_DrawStr(&u8g2, 2, 10, str);
-    snprintf(str, sizeof(str), "Hum: %.2f", hum);
-    u8g2_DrawStr(&u8g2, 2, 30, str);
-
-    get_values(&limits, &ms, &mi);
-    snprintf(str, sizeof(str), "%d < X < %d", mi, ms);
-    u8g2_DrawStr(&u8g2, 2, 50, str);
 
     m_state = get_state(&global_monitor);
-    if (m_state == monitoring) {
-      snprintf(str, sizeof(str), "monitoring");
-    } else if (m_state == idle) {
-      snprintf(str, sizeof(str), "idle");
-    } else if (m_state == changing_superior_temperature) {
-      snprintf(str, sizeof(str), "cs");
-    } else if (m_state == changing_inferior_temperature) {
-      snprintf(str, sizeof(str), "ci");
-    } else if (m_state == alerting) {
-      snprintf(str, sizeof(str), "ALERTING!!");
+    u8g2_ClearBuffer(&u8g2);
+    u8g2_DrawFrame(&u8g2, 4, 4, 124, 60);
+
+    if (m_state == idle || m_state == monitoring) {
+      u8g2_SetFont(&u8g2, u8g2_font_10x20_mf);
+      snprintf(str, sizeof(str), "Temp: %.0f", temp);
+      u8g2_DrawStr(&u8g2, 10, 35, str);
+      w = u8g2_GetStrWidth(&u8g2, str);
+      u8g2_SetFont(&u8g2, u8g2_font_helvB12_tf);
+      u8g2_DrawUTF8(&u8g2, w + 10, 35, "°C");
+    } else if (m_state == changing_inferior_temperature ||
+               m_state == changing_superior_temperature) {
+      u8g2_SetFont(&u8g2, u8g2_font_6x12_mf);
+      snprintf(str, sizeof(str), "intervalo de temp:");
+      u8g2_DrawStr(&u8g2, 10, 20, str);
+
+      u8g2_SetFont(&u8g2, u8g2_font_9x15_mf);
+      get_values(&limits, &ms, &mi);
+      snprintf(str, sizeof(str), "%d < %.0f < %d", mi, temp, ms);
+
+      w = u8g2_GetStrWidth(&u8g2, str);
+      u8g2_DrawStr(&u8g2, 10, 45, str);
+
+      if (m_state == changing_inferior_temperature) {
+        snprintf(tempStrCI, sizeof(tempStrCI), "%d", mi);
+        width_ci = u8g2_GetStrWidth(&u8g2, tempStrCI);
+        x = 8;
+        u8g2_DrawFrame(&u8g2, x, 30, width_ci + 6, 20);
+      } else {
+        snprintf(tempStrCS, sizeof(tempStrCS), "%d", ms);
+        width_cs = u8g2_GetStrWidth(&u8g2, tempStrCS);
+        x = w - width_cs + 6;
+        u8g2_DrawFrame(&u8g2, x, 30, width_cs + 6, 20);
+      }
     }
-    u8g2_DrawStr(&u8g2, 2, 60, str);
+
+    if (m_state == monitoring) {
+      snprintf(str, sizeof(str), "monitorando...");
+      u8g2_DrawStr(&u8g2, 10, 54, str);
+    } else if (m_state == alerting) {
+      snprintf(str, sizeof(str), "AVISO!!");
+      u8g2_DrawStr(&u8g2, 30, 25, str);
+      if (ringing) {
+        u8g2_DrawBitmap(&u8g2, 54, 35, sizeof(uint8_t) * 2, 16, bell_icon);
+      } else {
+        u8g2_DrawBitmap(&u8g2, 54, 35, sizeof(uint8_t) * 2, 16,
+                        bell_icon_ringing);
+      }
+      ringing = !ringing;
+    }
 
     u8g2_SendBuffer(&u8g2);
 
