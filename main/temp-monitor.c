@@ -546,22 +546,22 @@ void app_main(void) {
   }
 
   BaseType_t taskReadSensorCreation = xTaskCreatePinnedToCore(
-      vTaskReadSensor, "TASK_READ_SENSOR", 8096, NULL, 1, NULL, 1);
+      vTaskReadSensor, "TASK_READ_SENSOR", 8096, NULL, 10, NULL, 1);
   if (taskReadSensorCreation != pdPASS) {
     ESP_LOGE(TAG, "Error creating task: %s",
              esp_err_to_name(taskReadSensorCreation));
   }
 
-  BaseType_t taskDisplayCreation = xTaskCreatePinnedToCore(
-      vTaskDisplayTemperatureAndHumidity, "TASK_DISPLAY_READING", 4096, NULL, 2,
-      NULL, tskNO_AFFINITY);
+  BaseType_t taskDisplayCreation =
+      xTaskCreatePinnedToCore(vTaskDisplayTemperatureAndHumidity,
+                              "TASK_DISPLAY_READING", 4096, NULL, 2, NULL, 0);
   if (taskDisplayCreation != pdPASS) {
     ESP_LOGE(TAG, "Error creating task: %s",
              esp_err_to_name(taskDisplayCreation));
   }
 
   BaseType_t taskAlarmCreation =
-      xTaskCreatePinnedToCore(vTaskAlarm, "TASK_ALARM", 4096, NULL, 4, NULL, 0);
+      xTaskCreatePinnedToCore(vTaskAlarm, "TASK_ALARM", 4096, NULL, 4, NULL, 1);
   if (taskAlarmCreation != pdPASS) {
     ESP_LOGE(TAG, "Error creating task: %s",
              esp_err_to_name(taskAlarmCreation));
